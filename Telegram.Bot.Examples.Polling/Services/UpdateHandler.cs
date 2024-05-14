@@ -1,9 +1,14 @@
+using SeleniumTest;
+using System.IO;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.InlineQueryResults;
 using Telegram.Bot.Types.ReplyMarkups;
+using Telegram.Bot;
+using File = System.IO.File;
+using System.IO.Pipes;
 
 namespace Telegram.Bot.Services;
 
@@ -20,6 +25,42 @@ public class UpdateHandler : IUpdateHandler
 
     public async Task HandleUpdateAsync(ITelegramBotClient _, Update update, CancellationToken cancellationToken)
     {
+        // Check if the update has a message
+        if (update.Message != null)
+        {
+            _logger.LogWarning($"Ada user akses ni {update.Message.Chat.FirstName} {update.Message.Chat.LastName} {update.Message.Chat.Id}");
+            // Extract the chat ID from the message
+            long chatId = update.Message.Chat.Id;
+
+            // Perform your chat ID verification here
+            if (!IsAuthorizedChatId(chatId))
+            {
+                await _botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "Id tidak terdaftar . . .",
+                    cancellationToken: cancellationToken);
+                // If the chat ID is not authorized, you can choose to ignore the update or handle it accordingly
+                return;
+            }
+
+        }
+        else if (update.CallbackQuery != null)
+        {
+            // Extract the chat ID from the callback query
+            long chatId = update.CallbackQuery.Message.Chat.Id;
+
+            // Perform your chat ID verification here
+            if (!IsAuthorizedChatId(chatId))
+            {
+                await _botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "Id tidak terdaftar . . .",
+                    cancellationToken: cancellationToken);
+                // If the chat ID is not authorized, you can choose to ignore the update or handle it accordingly
+                return;
+            }
+        }
+
         var handler = update switch
         {
             // UpdateType.Unknown:
@@ -28,15 +69,25 @@ public class UpdateHandler : IUpdateHandler
             // UpdateType.ShippingQuery:
             // UpdateType.PreCheckoutQuery:
             // UpdateType.Poll:
-            { Message: { } message }                       => BotOnMessageReceived(message, cancellationToken),
-            { EditedMessage: { } message }                 => BotOnMessageReceived(message, cancellationToken),
-            { CallbackQuery: { } callbackQuery }           => BotOnCallbackQueryReceived(callbackQuery, cancellationToken),
-            { InlineQuery: { } inlineQuery }               => BotOnInlineQueryReceived(inlineQuery, cancellationToken),
+            { Message: { } message } => BotOnMessageReceived(message, cancellationToken),
+            { EditedMessage: { } message } => BotOnMessageReceived(message, cancellationToken),
+            { CallbackQuery: { } callbackQuery } => BotOnCallbackQueryReceived(callbackQuery, cancellationToken),
+            { InlineQuery: { } inlineQuery } => BotOnInlineQueryReceived(inlineQuery, cancellationToken),
             { ChosenInlineResult: { } chosenInlineResult } => BotOnChosenInlineResultReceived(chosenInlineResult, cancellationToken),
-            _                                              => UnknownUpdateHandlerAsync(update, cancellationToken)
+            _ => UnknownUpdateHandlerAsync(update, cancellationToken)
         };
 
         await handler;
+    }
+
+    // Define a list of authorized chat IDs (you can populate this list with your authorized chat IDs)
+    private readonly List<long> authorizedChatIds = new List<long> { 657952763, 5162612990 };
+
+    // Method to check if the chat ID is authorized
+    private bool IsAuthorizedChatId(long chatId)
+    {
+        // Check if the provided chat ID is in the list of authorized chat IDs
+        return authorizedChatIds.Contains(chatId);
     }
 
     private async Task BotOnMessageReceived(Message message, CancellationToken cancellationToken)
@@ -47,14 +98,17 @@ public class UpdateHandler : IUpdateHandler
 
         var action = messageText.Split(' ')[0] switch
         {
-            "/inline_keyboard" => SendInlineKeyboard(_botClient, message, cancellationToken),
+            "/inline_test"     => SendInlineKeyboard(_botClient, message, cancellationToken),
             "/keyboard"        => SendReplyKeyboard(_botClient, message, cancellationToken),
             "/remove"          => RemoveKeyboard(_botClient, message, cancellationToken),
             "/photo"           => SendFile(_botClient, message, cancellationToken),
             "/request"         => RequestContactAndLocation(_botClient, message, cancellationToken),
             "/inline_mode"     => StartInlineQuery(_botClient, message, cancellationToken),
+            "/test"            => TestWebsite(_botClient, message, cancellationToken),
             "/throw"           => FailingHandler(_botClient, message, cancellationToken),
-            _                  => Usage(_botClient, message, cancellationToken)
+            "/start"           => Start(_botClient, message, cancellationToken),
+            _                  => HandleUserResponse(_botClient, message, cancellationToken)
+            
         };
         Message sentMessage = await action;
         _logger.LogInformation("The message was sent with id: {SentMessageId}", sentMessage.MessageId);
@@ -77,20 +131,22 @@ public class UpdateHandler : IUpdateHandler
                     // first row
                     new []
                     {
-                        InlineKeyboardButton.WithCallbackData("1.1", "11"),
-                        InlineKeyboardButton.WithCallbackData("1.2", "12"),
+                        InlineKeyboardButton.WithCallbackData("Beranda", "Anda memilih beranda"),
+                        InlineKeyboardButton.WithCallbackData("Search", "Cari sesuatu?"),
                     },
                     // second row
                     new []
                     {
-                        InlineKeyboardButton.WithCallbackData("2.1", "21"),
-                        InlineKeyboardButton.WithCallbackData("2.2", "22"),
+                        InlineKeyboardButton.WithCallbackData("Navigasi", "Mau kemana?"),
+                        InlineKeyboardButton.WithCallbackData("Tutup", "Keluar"),
                     },
                 });
 
+            
+
             return await botClient.SendTextMessageAsync(
                 chatId: message.Chat.Id,
-                text: "Choose",
+                text: "Pilih salah satu menu dibawah ini:",
                 replyMarkup: inlineKeyboard,
                 cancellationToken: cancellationToken);
         }
@@ -110,6 +166,74 @@ public class UpdateHandler : IUpdateHandler
             return await botClient.SendTextMessageAsync(
                 chatId: message.Chat.Id,
                 text: "Choose",
+                replyMarkup: replyKeyboardMarkup,
+                cancellationToken: cancellationToken);
+        }
+
+        static async Task<Message> HandleUserResponse(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
+        {
+            string responseText;
+            string? imagePath = null;
+            switch (message.Text)
+            {
+                case "Beranda":
+                    await botClient.SendTextMessageAsync(
+                        chatId: message.Chat.Id,
+                        text: "Sedang mengecheck mohon bersabar . . .",
+                        cancellationToken: cancellationToken);
+
+                    imagePath = HomeTesting.RunTest().ImagePath;
+                    responseText = "Pengecekan beranda sukses . . .";
+                    break;
+                case "Search":
+                    responseText = "Performing search...";
+                    break;
+                case "Navigation":
+                    responseText = "Navigating...";
+                    break;
+                case "Oke":
+                    responseText = "Okay!";
+                    break;
+                default:
+                    responseText = "";
+                    break;
+            }
+
+            if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
+            {
+                using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                await using FileStream fileStream = new(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+                return await botClient.SendDocumentAsync(
+                    chatId: message.Chat.Id,
+                    document: new InputFileStream(fileStream, imagePath),
+                    caption: responseText,
+                    cancellationToken: cancellationToken);
+            }
+            else
+            {
+                return await botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: responseText,
+                    cancellationToken: cancellationToken);
+            }
+        }
+
+        static async Task<Message> TestWebsite(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
+        {
+            ReplyKeyboardMarkup replyKeyboardMarkup = new(
+                new[]
+                {
+                        new KeyboardButton[] { "Beranda", "Search" },
+                        new KeyboardButton[] { "Navigation", "Oke" },
+                })
+            {
+                ResizeKeyboard = true
+            };
+
+            return await botClient.SendTextMessageAsync(
+                chatId: message.Chat.Id,
+                text: "Which one do you want to testing",
                 replyMarkup: replyKeyboardMarkup,
                 cancellationToken: cancellationToken);
         }
@@ -174,6 +298,21 @@ public class UpdateHandler : IUpdateHandler
                 cancellationToken: cancellationToken);
         }
 
+        static async Task<Message> Start(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
+        {
+            string start = $"Halo {message.Chat.FirstName},\n" +
+               "Selamat datang di chat bot. Disini saya akan membantu Anda untuk:\n" +
+               "1. /test - Melakukan monitoring aplikasi.\n" +
+               "2. /inline_test - Melakukan testing sederhana.\n\n" +
+               "Jika Anda membutuhkan bantuan lebih lanjut, jangan ragu untuk bertanya.";
+
+            return await botClient.SendTextMessageAsync(
+                chatId: message.Chat.Id,
+                text: start,
+                replyMarkup: new ReplyKeyboardRemove(),
+                cancellationToken: cancellationToken);
+        }
+
         static async Task<Message> StartInlineQuery(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
         {
             InlineKeyboardMarkup inlineKeyboard = new(
@@ -201,15 +340,31 @@ public class UpdateHandler : IUpdateHandler
     {
         _logger.LogInformation("Received inline keyboard callback from: {CallbackQueryId}", callbackQuery.Id);
 
+        // Extract callback data and handle it
+        string callbackData = callbackQuery.Data;
+
+        string responseText = callbackData switch
+        {
+            "Anda memilih beranda" => "Anda telah memilih Beranda.",
+            "Cari sesuatu?" => "Anda memilih untuk mencari sesuatu.",
+            "Mau kemana?" => "Anda memilih Navigasi.",
+            "Keluar" => "Anda memilih untuk keluar.",
+            _ => "Pilihan tidak dikenali."
+        };
+
+        // Send a response message
+        await _botClient.SendTextMessageAsync(
+            chatId: callbackQuery.Message.Chat.Id,
+            text: responseText,
+            cancellationToken: cancellationToken
+        );
+
+        // Optionally, you can also acknowledge the callback query
         await _botClient.AnswerCallbackQueryAsync(
             callbackQueryId: callbackQuery.Id,
-            text: $"Received {callbackQuery.Data}",
-            cancellationToken: cancellationToken);
-
-        await _botClient.SendTextMessageAsync(
-            chatId: callbackQuery.Message!.Chat.Id,
-            text: $"Received {callbackQuery.Data}",
-            cancellationToken: cancellationToken);
+            text: "Pilihan diterima",
+            cancellationToken: cancellationToken
+        );
     }
 
     #region Inline Mode
